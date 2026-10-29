@@ -8,3 +8,9 @@
 - GraphQL: el `query` queda como texto triple-comillas indentado y se envía con `json=`.
 - Copiar, Descargar (`automatizacion.py`) y Ejecutar (Ctrl+Enter): corre los requests en el servidor con cookies compartidas y muestra estado, tiempo y respuesta.
 - Se eliminó el editor por pasos, las colecciones y el código asociado.
+
+## Diseño
+- Nuevo tema oscuro por capas, tipografía Inter (mono solo en código) y botón principal Ejecutar.
+- Zona para pegar o soltar cURL o .har; lista de requests con método por color y botón para quitar.
+- Script con resaltado y números de línea; respuestas plegables con estado por color, Body y Headers.
+- Limpiar (Esc / Ctrl+L). Recargar la página empieza vacío: ya no se guarda nada en el navegador.
