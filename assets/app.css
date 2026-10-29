@@ -187,3 +187,10 @@ i { font-style: normal; }
   #resCard { max-height: 70vh; }
   .code-card { height: 70vh; }
 }
+
+.linkchip {
+  display: inline-flex; align-items: center; margin: 3px 6px 0 0; padding: 1px 7px;
+  font: 500 10.5px var(--mono); color: var(--accent-2); background: rgba(124,108,255,.1);
+  border: 1px solid rgba(124,108,255,.22); border-radius: 99px; white-space: nowrap;
+}
+.chips { display: flex; flex-wrap: wrap; margin-top: 2px; }

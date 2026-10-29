@@ -151,6 +151,7 @@ function make_request(
     $code        = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $header_size = (int) curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     $ms          = (int) round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+    $final_url   = (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
     curl_close($ch);
 
     if ($err) return ['error' => $err];
@@ -185,6 +186,7 @@ function make_request(
             ? json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             : $resp_body,
         'is_json'          => $decoded !== null,
-        'cookies_received' => $new_cookies,   // para mostrar en UI
+        'cookies_received' => $new_cookies,
+        'final_url'         => $final_url,
     ];
 }

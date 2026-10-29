@@ -2,7 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  let curls = [], py = '';
+  let curls = [], py = '', links = [];
 
   /* ─── Resaltado ─────────────────────────────────────────────────────── */
   const PY_KW = /^(import|from|def|return|for|in|if|else|elif|try|except|with|as|while|not|and|or|is|lambda|class|pass|raise)$/;
@@ -37,15 +37,25 @@
     ['copy', 'download', 'run'].forEach(id => $(id).disabled = !n);
     $('clear').disabled = !n && $('resCard').hidden;
 
+    const byTo = {};
+    links.forEach(l => { (byTo[l.to] = byTo[l.to] || []).push(l); });
     $('list').innerHTML = curls.map((c, i) => {
       const r = Curl2Py.parseCurl(c); let host = '', path = r.url;
       try { const u = new URL(r.url); host = u.host; path = u.pathname + u.search; } catch (_) {}
+      const chips = (byTo[i + 1] || []).map(l =>
+        `<span class="linkchip" title="${esc(l.name)}">${esc((l.hint || l.name).split(/[\s_]/)[0])} ← ${l.from}</span>`
+      ).join('');
       return `<li><span class="mb m-${esc(r.method)}">${esc(r.method)}</span>
-        <span class="p"><b>${esc(path)}</b><small>${esc(host)}</small></span>
+        <span class="p"><b>${esc(path)}</b><small>${esc(host)}</small>${chips ? `<span class="chips">${chips}</span>` : ''}</span>
         <button class="x" data-i="${i}" aria-label="Quitar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></li>`;
     }).join('');
 
-    py = n ? Curl2Py.curlsToPython(curls.join('\n')) : '';
+    if (!n) py = '';
+    else if (!links.length) {
+      py = Curl2Py.curlsToPython(curls.join('\n'));
+      links = Curl2Py.chainLinksFor(curls);
+      if (links.length) return render();
+    }
     $('code').innerHTML = py
       ? `<pre class="ln">${py.replace(/\n$/, '').split('\n').map((_, i) => i + 1).join('\n')}</pre><pre class="src">${hlPy(py)}</pre>`
       : '<div class="code-empty"><svg viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5"/></svg></div>';
@@ -56,7 +66,7 @@
     let found = Curl2Py.splitCurls(t);
     if (!found.length && /^\s*\{/.test(t)) found = harToCurls(t);
     if (!found.length) return false;
-    curls.push(...found); render(); $('add').focus(); return true;
+    curls.push(...found); links = []; render(); $('add').focus(); return true;
   }
 
   function harToCurls(text) {
@@ -74,7 +84,7 @@
   }
 
   function clearAll() {
-    curls = []; $('add').value = ''; $('paste').value = ''; $('drop').classList.remove('typing'); $('results').innerHTML = ''; $('resCard').hidden = true; render();
+    curls = []; links = []; $('add').value = ''; $('paste').value = ''; $('drop').classList.remove('typing'); $('results').innerHTML = ''; $('resCard').hidden = true; render();
   }
 
   function toast(msg) {
@@ -97,6 +107,10 @@
     $('results').innerHTML = data.map((r, i) => resRow(r, reqs[i])).join('');
     const ok = data.filter(r => !r.error && r.status < 400).length;
     $('resSum').textContent = ok + '/' + data.length;
+    try {
+      const chained = Curl2Py.chainFromRun(curls, data);
+      if (chained && chained.python) { py = chained.python; links = chained.links || []; }
+    } catch (_) {}
     btn.disabled = false; btn.classList.remove('busy'); render();
   }
 
@@ -121,7 +135,7 @@
   /* ─── Eventos ────────────────────────────────────────────────────────── */
   $('list').addEventListener('click', e => {
     const x = e.target.closest('.x'); if (!x) return;
-    curls.splice(+x.dataset.i, 1); render();
+    curls.splice(+x.dataset.i, 1); links = []; render();
   });
   $('results').addEventListener('click', e => {
     const b = e.target.closest('.seg button'); if (!b) return;

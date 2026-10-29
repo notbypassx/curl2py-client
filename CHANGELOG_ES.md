@@ -14,3 +14,8 @@
 - Zona para pegar o soltar cURL o .har; lista de requests con método por color y botón para quitar.
 - Script con resaltado y números de línea; respuestas plegables con estado por color, Body y Headers.
 - Limpiar (Esc / Ctrl+L). Recargar la página empieza vacío: ya no se guarda nada en el navegador.
+
+## Encadenamiento
+- Filtra assets y tracking al pegar "Copy all as cURL".
+- Tras Ejecutar, regenera el script: tokens, cookies de sesión, Location/URL de checkout y campos HTML se extraen en runtime.
+- Chips en cada request (`token ← 2`). Las cookies que pone la respuesta las maneja la sesión.
