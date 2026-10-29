@@ -163,9 +163,49 @@
   function looksUrlEncoded(s) { return /^[^=&\s{}\[\]<>"]+=[^&\s]*(&[^=&\s]+=[^&\s]*)*$/.test(s); }
 
   /* ─── Literales Python ─────────────────────────────────────────────────── */
+  // Nombres de variables Python a interpolar como f-string ({{SHOP}} → {SHOP})
+  let FSTR = null;
   function pyStr(s) {
-    // JSON string escaping es válido en Python, salvo U+2028/2029 que JSON.stringify deja tal cual (también válido)
-    return JSON.stringify(String(s));
+    s = String(s);
+    const only = FSTR && s.match(/^\{\{\s*(\w+)\s*\}\}$/);
+    if (only && FSTR.has(only[1])) return only[1];
+    if (FSTR && /\{\{\s*\w+\s*\}\}/.test(s)) {
+      const parts = s.split(/(\{\{\s*\w+\s*\}\})/);
+      if (parts.some(x => { const m = x.match(/^\{\{\s*(\w+)\s*\}\}$/); return m && FSTR.has(m[1]); })) {
+        return 'f' + JSON.stringify(parts.map(x => {
+          const m = x.match(/^\{\{\s*(\w+)\s*\}\}$/);
+          return m && FSTR.has(m[1]) ? '\u0000' + m[1] + '\u0001' : x.replace(/\{/g, '{{').replace(/\}/g, '}}');
+        }).join('')).replace(/\\u0000/g, '{').replace(/\\u0001/g, '}');
+      }
+    }
+    return JSON.stringify(s);
+  }
+  function pyTriple(s) {
+    return '"""' + String(s).replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"').replace(/"$/, '\\"') + '"""';
+  }
+
+  /* ─── Variables automáticas: dominio de la tienda y token ──────────────── */
+  const TOKEN_HDR = /^(x-[\w-]*access-token|x-api-key|authorization)$/i;
+  function autoVars(m) {
+    const vars = [];
+    let host = '';
+    try { host = new URL(m.url).host; } catch (_) {}
+    const shopLike = /\.myshopify\.com$/i.test(host) || /\/admin\/api\/|\/api\/[\d-]+\/graphql|\/cart(\/[\w-]+)?\.js|\/products\/[^/]+\.js/i.test(m.url)
+      || m.headers.some(h => /^x-shopify-/i.test(h[0]));
+    if (host && shopLike) {
+      vars.push(['SHOP', host]);
+      const swap = v => v.split(host).join('{{SHOP}}');
+      m.url = swap(m.url);
+      m.headers = m.headers.map(([k, v]) => [k, /^(origin|referer)$/i.test(k) ? swap(v) : v]);
+    }
+    const t = m.headers.find(h => TOKEN_HDR.test(h[0]) && h[1]);
+    if (t) {
+      const mm = t[1].match(/^(Bearer|Token|Basic)\s+(.+)$/i);
+      const val = mm ? mm[2] : t[1];
+      vars.push(['TOKEN', val]);
+      m.headers = m.headers.map(([k, v]) => [k, v.split(val).join('{{TOKEN}}')]);
+    }
+    return vars;
   }
   function pyVal(v, ind = 0) {
     const pad = '    '.repeat(ind + 1), end = '    '.repeat(ind);
@@ -231,7 +271,14 @@
     if (m.params.length) { L.push('params = ' + wrap(pyVal(pairsToPy(m.params)))); args.push('params=params'); }
     if (m.headers.length) { L.push('headers = ' + wrap(pyVal(pairsToPy(m.headers)))); args.push('headers=headers'); }
     if (m.cookies.length) { L.push('cookies = ' + wrap(pyVal(pairsToPy(m.cookies)))); args.push('cookies=cookies'); }
-    if (m.json !== undefined) { L.push('json_data = ' + wrap(pyVal(m.json))); args.push('json=json_data'); }
+    if (m.json !== undefined) {
+      let j = m.json;
+      if (j && typeof j === 'object' && !Array.isArray(j) && typeof j.query === 'string') {   // GraphQL
+        L.push('query = ' + pyTriple(j.query));
+        j = { ...j, query: { __code: true, code: 'query' } };
+      }
+      L.push('json_data = ' + wrap(pyVal(j))); args.push('json=json_data');
+    }
     else if (m.dataFile) { L.push('data = open(' + pyStr(m.dataFile) + ', "rb").read()'); args.push('data=data'); }
     else if (m.data !== undefined) {
       L.push('data = ' + wrap(typeof m.data === 'string' ? pyStr(m.data) : pyVal(pairsToPy(m.data))));
@@ -258,11 +305,16 @@
   }
 
   function modelToPython(m) {
+    m = { ...m, headers: m.headers.slice() };
+    const vars = autoVars(m);
     const L = ['import requests'];
     if (!m.verify) L.push('import urllib3', '', 'urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)');
     L.push('');
+    vars.forEach(([k, v]) => L.push(k + ' = ' + JSON.stringify(v)));
+    if (vars.length) L.push('');
     (m.warnings || []).forEach(w => L.push('# Nota: ' + w));
-    L.push(...modelToPythonLines(m));
+    FSTR = new Set(vars.map(v => v[0]));
+    try { L.push(...modelToPythonLines(m)); } finally { FSTR = null; }
     L.push('', 'print(response.status_code)', 'try:', '    print(response.json())', 'except ValueError:', '    print(response.text)');
     return L.join('\n') + '\n';
   }
@@ -349,6 +401,17 @@
     ];
     if (anyInsecure) L.push('import urllib3', '', 'urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)');
     const vars = {}; env.filter(e => e.key).forEach(e => vars[e.key] = e.value);
+    const models = steps.map(st => {
+      const m = stepToModel(st);
+      autoVars(m).forEach(([k, v]) => {
+        if (!(k in vars)) vars[k] = v;
+        else if (vars[k] !== v) {   // mismo nombre, otro valor: no sustituir
+          const back = x => x.split('{{' + k + '}}').join(v);
+          m.url = back(m.url); m.headers = m.headers.map(([a, b]) => [a, back(b)]);
+        }
+      });
+      return m;
+    });
     L.push('',
       '# ── Variables ({{NOMBRE}} en URL, headers o body) ─────────────────────────',
       'VARS = ' + pyVal(vars),
@@ -414,7 +477,7 @@
       const body = [];
       if (!(s.url || '').trim()) body.push('# URL vacía', 'return None');
       else {
-        body.push(...modelToPythonLines(stepToModel(s), { session: 'session', wrap: x => 'render(' + x + ')' }).flatMap(l => l.split('\n')));
+        body.push(...modelToPythonLines(models[i], { session: 'session', wrap: x => 'render(' + x + ')' }).flatMap(l => l.split('\n')));
         body.push('show(' + pyStr(s.name || 'Paso ' + (i + 1)) + ', response)');
         (s.chain_extracts || []).filter(e => e.var && e.path).forEach(e =>
           body.push('VARS[' + pyStr(e.var) + '] = extract(response, ' + pyStr(e.path) + ')',

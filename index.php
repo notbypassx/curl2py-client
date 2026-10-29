@@ -77,7 +77,7 @@ $db = db_load();
           <option>GET</option><option>POST</option><option>PUT</option>
           <option>PATCH</option><option>DELETE</option><option>HEAD</option>
         </select>
-        <input class="url-in" id="urlIn" placeholder="https://api.example.com/endpoint" oninput="syncField();updateCode()">
+        <input class="url-in" id="urlIn" placeholder="curl … / https://…" oninput="syncField();updateCode()">
       </div>
 
       <!-- Timeout + Proxy row -->

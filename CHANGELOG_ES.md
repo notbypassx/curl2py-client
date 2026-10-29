@@ -26,3 +26,9 @@
 ## Archivos
 - Nuevo: `assets/curl2py.js`
 - Modificados: `index.php`, `assets/app.js`, `assets/app.css`, `core/actions.php`, `core/request.php`
+
+## cURL primero
+- Pegar un `curl` en cualquier parte de la página (barra de URL, modal Importar o fuera de un campo) llena al instante el paso actual: URL, método, query, headers, cookies, auth y body.
+- Python: detecta el dominio de la tienda y el token (`X-…-Access-Token`, `Authorization`, `X-API-Key`) y los pone arriba como `SHOP` y `TOKEN`; en Flujo pasan a `VARS`.
+- GraphQL: el `query` se escribe como texto triple-comillas legible y se envía con `json=`.
+- Al cargar un paso ya no quedan restos del body/form de otro paso, ni un `Content-Type: application/json` agregado de más.

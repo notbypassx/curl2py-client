@@ -177,6 +177,8 @@ function loadStep(i) {
   document.getElementById('stepProxy').value   = s.proxy ?? '';
   const bt = s.body_type || 'none';
   applyBodyType(bt);
+  ['bodyTa', 'bodyUrlenc', 'bodyRaw'].forEach(id => document.getElementById(id).value = '');
+  rebuildFormFields([]);
   if (bt === 'json')   document.getElementById('bodyTa').value     = s.body || '';
   if (bt === 'urlenc') document.getElementById('bodyUrlenc').value = s.body || '';
   if (bt === 'raw')    document.getElementById('bodyRaw').value    = s.body || '';
@@ -216,6 +218,8 @@ function flushStep() {
 
 function syncField() {
   const s = step(); if (!s) return;
+  const urlVal = document.getElementById('urlIn').value;
+  if (Curl2Py.isCurl(urlVal) && urlVal.includes('://')) { importCurl(urlVal); return; }
   s.name    = document.getElementById('stepName').value;
   s.method  = document.getElementById('msel').value;
   s.url     = document.getElementById('urlIn').value;
@@ -246,7 +250,6 @@ function addHeader(k = '', v = '') {
 function rebuildHeaders(arr) {
   document.getElementById('hList').innerHTML = '';
   arr.forEach(h => addHeader(h.key || '', h.value || ''));
-  if (!arr.length) addHeader('Content-Type', 'application/json');
 }
 function getHeaders() {
   return [...document.querySelectorAll('.h-row')].map(r => {
@@ -801,8 +804,9 @@ function importCurl(raw, asNewStep = false) {
   }
   loadStep(S.si);
   setLang('py');
-  showCodeTab();
-  toast(`cURL → Python · ${imported.method}`, '#00d47e');
+  const tab = document.querySelector(".rtab[onclick*=\"'rHeaders'\"]");
+  if (tab) switchRTab(tab, 'rHeaders');
+  toast(`${imported.method} · ${imported.headers.length} headers`, '#00d47e');
 }
 
 function importDevtools(raw) {
@@ -1053,11 +1057,15 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// Pegar un cURL en la URL lo importa directo
+// Pegar un cURL en cualquier parte (excepto el editor de código) llena el paso
 document.addEventListener('paste', e => {
-  if (e.target.id !== 'urlIn') return;
+  if (e.target.id === 'codeTxt') return;
   const txt = e.clipboardData?.getData('text') || '';
-  if (Curl2Py.isCurl(txt)) { e.preventDefault(); importCurl(txt); }
+  if (!Curl2Py.isCurl(txt)) return;
+  e.preventDefault();
+  const fromModal = e.target.id === 'rawHeadersTa';
+  importCurl(txt, fromModal && document.getElementById('optNewStep').checked);
+  if (fromModal) closeImport();
 });
 
 // Auto-format JSON on paste
