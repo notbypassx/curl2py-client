@@ -29,12 +29,14 @@ if (($_POST['action'] ?? '') === 'run') { action_run(); exit; }
   <div class="col">
     <section class="card" id="reqCard">
       <div class="card-h"><span>Requests</span></div>
-      <label id="drop" class="drop">
-        <svg viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
-        <b>Pega o suelta un cURL</b>
-        <small>Ctrl+V · .har</small>
-        <input type="file" id="file" accept=".har,.txt,.sh,application/json" hidden>
-      </label>
+      <div id="drop" class="drop">
+        <textarea id="paste" spellcheck="false" autofocus aria-label="cURL"></textarea>
+        <div class="drop-hint">
+          <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+          <b>Pega un cURL</b>
+          <small>Ctrl+V</small>
+        </div>
+      </div>
       <ul id="list" class="list"></ul>
       <textarea id="add" class="add" rows="1" spellcheck="false" placeholder="+ curl …" hidden></textarea>
     </section>

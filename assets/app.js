@@ -56,7 +56,7 @@
     let found = Curl2Py.splitCurls(t);
     if (!found.length && /^\s*\{/.test(t)) found = harToCurls(t);
     if (!found.length) return false;
-    curls.push(...found); render(); return true;
+    curls.push(...found); render(); $('add').focus(); return true;
   }
 
   function harToCurls(text) {
@@ -74,7 +74,7 @@
   }
 
   function clearAll() {
-    curls = []; $('add').value = ''; $('results').innerHTML = ''; $('resCard').hidden = true; render();
+    curls = []; $('add').value = ''; $('paste').value = ''; $('drop').classList.remove('typing'); $('results').innerHTML = ''; $('resCard').hidden = true; render();
   }
 
   function toast(msg) {
@@ -132,8 +132,11 @@
   $('add').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (addText(e.target.value)) e.target.value = ''; }
   });
-  $('drop').addEventListener('click', e => { if (e.target.tagName !== 'INPUT') { e.preventDefault(); $('file').click(); } });
-  $('file').addEventListener('change', async e => { const f = e.target.files[0]; if (f) addText(await f.text()); e.target.value = ''; });
+  $('drop').addEventListener('click', () => $('paste').focus());
+  $('paste').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && Curl2Py.splitCurls(e.target.value).length) { e.preventDefault(); if (addText(e.target.value)) e.target.value = ''; }
+  });
+  $('paste').addEventListener('input', e => $('drop').classList.toggle('typing', !!e.target.value));
   ['dragover', 'dragleave', 'drop'].forEach(t => document.addEventListener(t, async e => {
     e.preventDefault();
     document.body.classList.toggle('dragging', t === 'dragover');
@@ -142,8 +145,10 @@
     addText(f ? await f.text() : e.dataTransfer.getData('text'));
   }));
   document.addEventListener('paste', e => {
-    const t = e.clipboardData.getData('text');
-    if (addText(t)) e.preventDefault();
+    const el = e.target, mine = el === $('paste') || el === $('add');
+    if (!mine && el.closest && el.closest('input, textarea, [contenteditable]')) return;
+    const t = (e.clipboardData || window.clipboardData).getData('text');
+    if (addText(t)) { e.preventDefault(); if (mine) el.value = ''; $('drop').classList.remove('typing'); }
   });
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); run(); }
@@ -162,4 +167,5 @@
   };
 
   render();
+  $('paste').focus();
 })();
