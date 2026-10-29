@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * curl2py.js — Conversor cURL (bash) → Python (requests) + exportador de
- * colecciones a script Python. Sin dependencias. Funciona en navegador y Node.
+ * curl2py.js — Uno o varios cURL (bash/cmd) → script Python (requests.Session).
+ * Sin dependencias. Funciona en navegador y Node.
  * ═══════════════════════════════════════════════════════════════════════════ */
 (function (root) {
   'use strict';
@@ -203,7 +203,7 @@
       const mm = t[1].match(/^(Bearer|Token|Basic)\s+(.+)$/i);
       const val = mm ? mm[2] : t[1];
       vars.push(['TOKEN', val]);
-      m.headers = m.headers.map(([k, v]) => [k, v.split(val).join('{{TOKEN}}')]);
+      m.headers = m.headers.map(([k, v]) => [k, TOKEN_HDR.test(k) ? v.split(val).join('{{TOKEN}}') : v]);
     }
     return vars;
   }
@@ -304,220 +304,139 @@
     return L;
   }
 
-  function modelToPython(m) {
-    m = { ...m, headers: m.headers.slice() };
-    const vars = autoVars(m);
-    const L = ['import requests'];
-    if (!m.verify) L.push('import urllib3', '', 'urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)');
-    L.push('');
-    vars.forEach(([k, v]) => L.push(k + ' = ' + JSON.stringify(v)));
-    if (vars.length) L.push('');
-    (m.warnings || []).forEach(w => L.push('# Nota: ' + w));
-    FSTR = new Set(vars.map(v => v[0]));
-    try { L.push(...modelToPythonLines(m)); } finally { FSTR = null; }
-    L.push('', 'print(response.status_code)', 'try:', '    print(response.json())', 'except ValueError:', '    print(response.text)');
-    return L.join('\n') + '\n';
+  /* ─── Varios cURL en un solo texto ─────────────────────────────────────── */
+  function splitCurls(text) {
+    return String(text || '').replace(/\r\n/g, '\n')
+      .split(/\n(?=[ \t]*curl(?:\.exe)?\s)/i)
+      .map(s => s.trim()).filter(s => /^curl(\.exe)?\s/i.test(s));
   }
 
-  function curlToPython(cmd) { return modelToPython(curlToModel(parseCurl(cmd))); }
-  function isCurl(s) { return /^\s*curl(\.exe)?\s/i.test(String(s || '')); }
+  function slug(s) {
+    return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+  function fnName(m, used) {
+    let path = '';
+    try { path = new URL(m.url.replace(/\{\{\s*\w+\s*\}\}/g, 'x')).pathname; } catch (_) {}
+    const segs = path.split('/').filter(s => s && !/^\d[\d-]*$/.test(s) && !/^v\d+$/i.test(s) && !/^(admin|api)$/i.test(s));
+    let base = slug(m.method + '_' + segs.slice(-2).join('_').replace(/\.(js|json)$/i, '')) || 'request';
+    if (/^\d/.test(base)) base = 'r_' + base;
+    let n = base, i = 2;
+    while (used.has(n)) n = base + '_' + i++;
+    used.add(n);
+    return n;
+  }
+  const key = ([k, v]) => k.toLowerCase() + '\u0000' + v;
+  function common(lists) {
+    if (!lists.length) return [];
+    return lists[0].filter(p => lists.every(l => l.some(q => key(q) === key(p))));
+  }
 
-  /* ─── Integración con los pasos de la app ──────────────────────────────── */
-  // cURL → paso de la app (formato de app.js)
-  function curlToStep(cmd, name) {
+  // GraphQL en una sola línea → indentado por llaves (si no tiene strings)
+  function prettyGql(q) {
+    if (q.includes('\n') || /["']/.test(q)) return q;
+    let d = 0;
+    return q.replace(/\s*([{}])\s*/g, (_, b) => b === '{' ? ' {\n' + '  '.repeat(++d) : '\n' + '  '.repeat(--d) + '}\n' + '  '.repeat(d))
+      .replace(/\n\s*\n/g, '\n').replace(/\s+$/, '').replace(/,\s*/g, ', ')
+      .split('\n').map(l => l.replace(/\s+$/, '')).join('\n');
+  }
+
+  /* ─── Script Python a partir de uno o varios cURL ──────────────────────── */
+  function curlsToPython(text) {
+    const cmds = splitCurls(text);
+    if (!cmds.length) return '';
+    const models = cmds.map(c => curlToModel(parseCurl(c)));
+
+    // Variables (SHOP, TOKEN…): la primera gana; si otro request trae otro valor queda literal
+    const vars = {};
+    models.forEach(m => autoVars(m).forEach(([k, v]) => {
+      if (!(k in vars)) vars[k] = v;
+      else if (vars[k] !== v) {
+        const back = x => x.split('{{' + k + '}}').join(v);
+        m.url = back(m.url); m.headers = m.headers.map(([a, b]) => [a, back(b)]);
+      }
+    }));
+
+    if (vars.SHOP) models.forEach(m => {   // mismo dominio en los demás requests
+      const swap = v => v.split('//' + vars.SHOP).join('//{{SHOP}}');
+      m.url = swap(m.url);
+      m.headers = m.headers.map(([k, v]) => [k, /^(origin|referer)$/i.test(k) ? swap(v) : v]);
+    });
+
+    // Headers y cookies repetidos en todos los requests → sesión
+    const H = common(models.map(m => m.headers)), C = common(models.map(m => m.cookies));
+    models.forEach(m => {
+      m.headers = m.headers.filter(p => !H.some(q => key(q) === key(p)));
+      m.cookies = m.cookies.filter(p => !C.some(q => key(q) === key(p)));
+    });
+
+    const used = new Set(), queries = [];
+    const fns = models.map(m => {
+      const name = fnName(m, used);
+      const j = m.json;
+      if (j && typeof j === 'object' && !Array.isArray(j) && typeof j.query === 'string') {
+        const q = name.toUpperCase() + '_QUERY';
+        queries.push([q, prettyGql(j.query)]);
+        m.json = { ...j, query: { __code: true, code: q } };
+      }
+      return { name, m };
+    });
+
+    FSTR = new Set(Object.keys(vars));
+    try {
+      const L = ['import requests'];
+      if (models.some(m => !m.verify)) L.push('import urllib3', '', 'urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)');
+      L.push('');
+      Object.entries(vars).forEach(([k, v]) => L.push(k + ' = ' + JSON.stringify(v)));
+      if (H.length) L.push('HEADERS = ' + pyVal(pairsToPy(H)));
+      if (C.length) L.push('COOKIES = ' + pyVal(pairsToPy(C)));
+      queries.forEach(([q, s]) => L.push('', q + ' = ' + pyTriple(s)));
+      fns.forEach(({ name, m }) => {
+        L.push('', '');
+        (m.warnings || []).forEach(w => L.push('# ' + w));
+        L.push('def ' + name + '(s):');
+        modelToPythonLines(m, { session: 's', respVar: 'r' })
+          .forEach(x => L.push(x ? x.split('\n').map(y => '    ' + y).join('\n') : ''));
+        L.push('    return r');
+      });
+      L.push('', '',
+        'def show(r):',
+        '    print(r.status_code, r.request.method, r.url)',
+        '    print(r.text[:2000])',
+        '    print()',
+        '', '',
+        'def main():',
+        '    s = requests.Session()');
+      if (H.length) L.push('    s.headers.update(HEADERS)');
+      if (C.length) L.push('    s.cookies.update(COOKIES)');
+      L.push('    for step in (' + fns.map(f => f.name).join(', ') + (fns.length === 1 ? ',' : '') + '):',
+        '        show(step(s))',
+        '', '',
+        'if __name__ == "__main__":',
+        '    main()');
+      return L.join('\n') + '\n';
+    } finally { FSTR = null; }
+  }
+
+  /* ─── Request listo para ejecutar en el servidor ───────────────────────── */
+  function curlToWire(cmd) {
     const r = parseCurl(cmd);
-    const headers = r.headers.map(([key, value]) => ({ key, value }));
-    if (r.cookies.length) headers.push({ key: 'Cookie', value: r.cookies.map(([k, v]) => k + '=' + v).join('; ') });
-    if (r.auth) headers.push({ key: 'Authorization', value: 'Basic ' + b64(r.auth[0] + ':' + r.auth[1]) });
-    const st = { name: name || autoName(r), method: r.method, url: r.url, headers, body: '', body_type: 'none',
-      form_fields: [], php_code: null, timeout: r.timeout || 30, proxy: r.proxy || '', chain_extracts: [], insecure: r.insecure };
+    const headers = r.headers.slice();
+    if (r.cookies.length) headers.push(['Cookie', r.cookies.map(([k, v]) => k + '=' + v).join('; ')]);
+    if (r.auth) headers.push(['Authorization', 'Basic ' + b64(r.auth[0] + ':' + r.auth[1])]);
+    const w = { method: r.method, url: r.url, headers, insecure: r.insecure };
     if (r.form.length) {
-      st.body_type = 'form';
-      st.form_fields = r.form.map(f => ({ key: f.key, value: f.value !== undefined ? f.value : '@' + f.file }));
-      st.headers = st.headers.filter(h => !(h.key.toLowerCase() === 'content-type' && /multipart/i.test(h.value)));
-    } else if (r.body !== null) {
-      const ct = (headers.find(h => h.key.toLowerCase() === 'content-type') || {}).value || '';
-      let isJson = false; try { JSON.parse(r.body); isJson = /^\s*[\[{]/.test(r.body); } catch (_) {}
-      if (isJson || /json/i.test(ct)) { st.body_type = isJson ? 'json' : 'raw'; st.body = isJson ? JSON.stringify(JSON.parse(r.body), null, 2) : r.body; }
-      else if (looksUrlEncoded(r.body)) { st.body_type = 'urlenc'; st.body = r.body.split('&').join('\n'); }
-      else { st.body_type = 'raw'; st.body = r.body; }
-    }
-    return st;
-  }
-  function autoName(r) {
-    try { const u = new URL(r.url); const p = u.pathname.split('/').filter(Boolean).pop(); return r.method + ' ' + (p || u.host); } catch (_) { return r.method; }
+      w.form = r.form.filter(f => f.value !== undefined).map(f => [f.key, f.value]);
+      w.headers = w.headers.filter(h => !/^content-type$/i.test(h[0]));
+    } else if (r.body !== null) w.body = r.body;
+    return w;
   }
   function b64(s) {
-    if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(s)));
-    return Buffer.from(s, 'utf8').toString('base64');
+    if (typeof Buffer !== 'undefined') return Buffer.from(s, 'utf8').toString('base64');
+    return btoa(unescape(encodeURIComponent(s)));
   }
 
-  // Paso de la app → modelo
-  function stepToModel(s) {
-    const { base, params } = splitUrl((s.url || '').trim());
-    const m = { method: (s.method || 'GET').toUpperCase(), url: base, params, headers: [], cookies: [], json: undefined,
-      data: undefined, dataFile: null, files: [], auth: null, verify: !s.insecure, timeout: s.timeout || 30, proxy: s.proxy || '', warnings: [] };
-    (s.headers || []).filter(h => h.key).forEach(h => {
-      if (h.key.toLowerCase() === 'cookie') m.cookies.push(...parseCookieStr(h.value)); else m.headers.push([h.key, h.value]);
-    });
-    const bt = s.body_type || 'none', body = (s.body || '').trim();
-    const dropCt = re => { const i = m.headers.findIndex(h => h[0].toLowerCase() === 'content-type' && re.test(h[1])); if (i >= 0) m.headers.splice(i, 1); };
-    if (bt === 'form') {
-      m.files = (s.form_fields || []).filter(f => f.key).map(f =>
-        String(f.value).startsWith('@') ? { key: f.key, file: f.value.slice(1), isFile: true } : { key: f.key, value: f.value });
-      dropCt(/multipart|json/i);
-    } else if (bt === 'json' && body) {
-      try { m.json = JSON.parse(body); dropCt(/^application\/json\s*(;\s*charset=utf-8)?$/i); } catch (_) { m.data = body; }
-    } else if (bt === 'urlenc' && body) {
-      const pairs = body.split(/\n|&/).map(l => l.trim()).filter(Boolean).map(l => { const k = l.indexOf('='); return k < 0 ? [l, ''] : [l.slice(0, k), l.slice(k + 1)]; });
-      m.data = pairs; dropCt(/x-www-form-urlencoded|json/i);
-    } else if (bt === 'raw' && body) m.data = body;
-    else if (bt === 'none') dropCt(/^application\/json$/i);  // header por defecto sin body: innecesario
-    return m;
-  }
-  function stepToPython(s) { return modelToPython(stepToModel(s)); }
-
-  /* ─── Colección completa → script Python de automatización ──────────────── */
-  function collectionToPython(c, opts = {}) {
-    const steps = c.steps || [];
-    const env = c.env || [];
-    const anyInsecure = steps.some(s => s.insecure);
-    const L = [
-      '#!/usr/bin/env python3',
-      '"""',
-      'Automatización: ' + String(c.name || 'Sin nombre').replace(/"""/g, "'''"),
-      'Generado por API Builder — ' + new Date().toISOString().slice(0, 10),
-      '',
-      'Uso:  pip install requests  &&  python ' + slug(c.name || 'flujo') + '.py',
-      'Variables: edita VARS abajo o pásalas por entorno, p.ej.  TOKEN=abc python script.py',
-      '"""',
-      'import json',
-      'import os',
-      'import re',
-      'import sys',
-      'import time',
-      '',
-      'import requests',
-    ];
-    if (anyInsecure) L.push('import urllib3', '', 'urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)');
-    const vars = {}; env.filter(e => e.key).forEach(e => vars[e.key] = e.value);
-    const models = steps.map(st => {
-      const m = stepToModel(st);
-      autoVars(m).forEach(([k, v]) => {
-        if (!(k in vars)) vars[k] = v;
-        else if (vars[k] !== v) {   // mismo nombre, otro valor: no sustituir
-          const back = x => x.split('{{' + k + '}}').join(v);
-          m.url = back(m.url); m.headers = m.headers.map(([a, b]) => [a, back(b)]);
-        }
-      });
-      return m;
-    });
-    L.push('',
-      '# ── Variables ({{NOMBRE}} en URL, headers o body) ─────────────────────────',
-      'VARS = ' + pyVal(vars),
-      '# Las variables de entorno del sistema sobrescriben VARS',
-      'VARS.update({k: v for k, v in os.environ.items() if k in VARS})',
-      '',
-      'STOP_ON_ERROR = ' + (opts.stopOnError === false ? 'False' : 'True'),
-      'DELAY_SECONDS = ' + (Number(opts.delay) || 0),
-      '',
-      'session = requests.Session()  # comparte cookies entre pasos',
-      '',
-      '',
-      'def render(value):',
-      '    """Sustituye {{VAR}} recursivamente en str / dict / list."""',
-      '    if isinstance(value, str):',
-      '        return re.sub(r"\\{\\{\\s*([^}]+?)\\s*\\}\\}", lambda m: str(VARS.get(m.group(1), m.group(0))), value)',
-      '    if isinstance(value, dict):',
-      '        return {render(k): render(v) for k, v in value.items()}',
-      '    if isinstance(value, (list, tuple)):',
-      '        return type(value)(render(v) for v in value)',
-      '    return value',
-      '',
-      '',
-      'def extract(response, path):',
-      '    """Extrae un valor: "data.items.0.id" (JSON), "header:X-Token", "cookie:session" o "regex:token=(\\\\w+)"."""',
-      '    if path.startswith("header:"):',
-      '        return response.headers.get(path[7:].strip())',
-      '    if path.startswith("cookie:"):',
-      '        return session.cookies.get(path[7:].strip())',
-      '    if path.startswith("regex:"):',
-      '        m = re.search(path[6:], response.text)',
-      '        return (m.group(1) if m.groups() else m.group(0)) if m else None',
-      '    try:',
-      '        cur = response.json()',
-      '    except ValueError:',
-      '        return None',
-      '    for part in path.split("."):',
-      '        if isinstance(cur, list) and part.lstrip("-").isdigit():',
-      '            idx = int(part)',
-      '            cur = cur[idx] if -len(cur) <= idx < len(cur) else None',
-      '        elif isinstance(cur, dict):',
-      '            cur = cur.get(part)',
-      '        else:',
-      '            return None',
-      '        if cur is None:',
-      '            return None',
-      '    return cur if isinstance(cur, str) else json.dumps(cur, ensure_ascii=False) if isinstance(cur, (dict, list)) else str(cur)',
-      '',
-      '',
-      'def show(name, response):',
-      '    print(f"\\n=== {name} -> {response.status_code} ({response.elapsed.total_seconds() * 1000:.0f} ms) ===")',
-      '    try:',
-      '        print(json.dumps(response.json(), indent=2, ensure_ascii=False)[:2000])',
-      '    except ValueError:',
-      '        print(response.text[:2000])',
-      '');
-    const fnames = [];
-    steps.forEach((s, i) => {
-      const fn = 'paso_' + (i + 1) + '_' + slug(s.name || '').slice(0, 30);
-      const fname = fn.replace(/_+$/, '');
-      fnames.push([fname, s.name || 'Paso ' + (i + 1)]);
-      L.push('', 'def ' + fname + '():');
-      const body = [];
-      if (!(s.url || '').trim()) body.push('# URL vacía', 'return None');
-      else {
-        body.push(...modelToPythonLines(models[i], { session: 'session', wrap: x => 'render(' + x + ')' }).flatMap(l => l.split('\n')));
-        body.push('show(' + pyStr(s.name || 'Paso ' + (i + 1)) + ', response)');
-        (s.chain_extracts || []).filter(e => e.var && e.path).forEach(e =>
-          body.push('VARS[' + pyStr(e.var) + '] = extract(response, ' + pyStr(e.path) + ')',
-                    'print("  " + ' + pyStr(e.var) + ' + " =", VARS[' + pyStr(e.var) + '])'));
-        body.push('return response');
-      }
-      body.forEach(l => L.push(l ? '    ' + l : ''));
-      L.push('');
-    });
-    L.push('', 'STEPS = [', ...fnames.map(([f, n]) => '    (' + pyStr(n) + ', ' + f + '),'), ']', '',
-      '',
-      'def main():',
-      '    ok = fail = 0',
-      '    for name, fn in STEPS:',
-      '        try:',
-      '            response = fn()',
-      '        except requests.RequestException as exc:',
-      '            print(f"\\n=== {name} -> ERROR: {exc}")',
-      '            response = None',
-      '        if response is None or response.status_code >= 400:',
-      '            fail += 1',
-      '            if STOP_ON_ERROR:',
-      '                print("Detenido por error (STOP_ON_ERROR = True)")',
-      '                break',
-      '        else:',
-      '            ok += 1',
-      '        if DELAY_SECONDS:',
-      '            time.sleep(DELAY_SECONDS)',
-      '    print(f"\\nResumen: {ok} ok · {fail} error(es)")',
-      '    print("Variables finales:", json.dumps(VARS, indent=2, ensure_ascii=False))',
-      '    return 1 if fail else 0',
-      '',
-      '',
-      'if __name__ == "__main__":',
-      '    sys.exit(main())');
-    return L.join('\n') + '\n';
-  }
-  function slug(s) { return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'flujo'; }
-
-  const API = { tokenize, parseCurl, curlToModel, modelToPython, curlToPython, isCurl, curlToStep, stepToModel, stepToPython, collectionToPython, slug };
+  const API = { tokenize, parseCurl, curlToModel, splitCurls, curlsToPython, curlToWire };
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
   else root.Curl2Py = API;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -182,7 +182,7 @@ function make_request(
         'size'             => strlen($resp_body),
         'headers'          => $resp_headers,
         'body'             => $decoded !== null
-            ? json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)
+            ? json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             : $resp_body,
         'is_json'          => $decoded !== null,
         'cookies_received' => $new_cookies,   // para mostrar en UI
